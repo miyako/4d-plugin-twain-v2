@@ -1,0 +1,21 @@
+{
+	"name": "TWAIN",
+	"id": 20000,
+	"commands": [
+		{
+			"theme": "TWAIN",
+			"syntax": "TWAIN Get devices:C",
+			"threadSafe": true
+		},
+		{
+			"theme": "TWAIN",
+			"syntax": "TWAIN Get default option(&T):J",
+			"threadSafe": true
+		},
+		{
+			"theme": "TWAIN",
+			"syntax": "TWAIN Scan(&T;&J;&L):C",
+			"threadSafe": true
+		}
+	]
+}

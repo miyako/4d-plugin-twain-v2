@@ -1,0 +1,17 @@
+{
+    "themes": [
+        {
+            "theme": "TWAIN image types",
+            "constants": [
+                {
+                    "name": "Scanner image type JPEG",
+                    "value": "0:L"
+                },
+                {
+                    "name": "Scanner image type PNG",
+                    "value": "2:L"
+                }
+            ]
+        }
+    ]
+}

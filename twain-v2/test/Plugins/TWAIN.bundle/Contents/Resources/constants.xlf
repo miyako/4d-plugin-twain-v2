@@ -1,0 +1,19 @@
+﻿<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+<xliff version="1.0" xmlns:d4="http://www.4d.com/d4-ns">
+    <header>
+        <note>TWAIN</note>
+    </header>
+    <group resname="themes">
+        <trans-unit id="" resname="36AE72C589E94F38A1D77EE5C2846DF2" translate="no">
+            <source>TWAIN image types</source>
+        </trans-unit>
+    </group>
+    <group restype="x-4DK#" d4:groupName="36AE72C589E94F38A1D77EE5C2846DF2">
+        <trans-unit d4:value="0:L" id="36AE72C589E94F38A1D77EE5C2846DF2.1">
+            <source>Scanner image type JPEG</source>
+        </trans-unit>
+        <trans-unit d4:value="2:L" id="36AE72C589E94F38A1D77EE5C2846DF2.2">
+            <source>Scanner image type PNG</source>
+        </trans-unit>
+    </group>
+</xliff>

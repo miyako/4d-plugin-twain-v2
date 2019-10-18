@@ -8,7 +8,7 @@
 		<dict>
 			<key>hash</key>
 			<data>
-			n+BRnVh3HUrsxu/FNd4mMW17wSQ=
+			qT9VFQkX7TC8TpyyCD+d/yWHC+s=
 			</data>
 			<key>optional</key>
 			<true/>
@@ -22,10 +22,6 @@
 	<dict>
 		<key>QuickLook/Thumbnail.png</key>
 		<dict>
-			<key>hash</key>
-			<data>
-			hC+U8EqvyIRM1lLakHLfvl4V9Tc=
-			</data>
 			<key>hash2</key>
 			<data>
 			nGfrvibB5KlzvZgF4Bra+l0HpRloxismgTLePnOwCdk=
@@ -33,23 +29,15 @@
 		</dict>
 		<key>Resources/English.lproj/InfoPlist.strings</key>
 		<dict>
-			<key>hash</key>
-			<data>
-			n+BRnVh3HUrsxu/FNd4mMW17wSQ=
-			</data>
 			<key>hash2</key>
 			<data>
-			0NG7nInifSQ1vJ5QYybMcUpVdBH9gncqpOm0kAl4VSw=
+			JTfLCVuOfuvwiiMZ7bbPa8mO242E1YBGd6ME/l1MCR8=
 			</data>
 			<key>optional</key>
 			<true/>
 		</dict>
 		<key>Resources/constants.xlf</key>
 		<dict>
-			<key>hash</key>
-			<data>
-			JIbOgmFML3i4BUbVRaJUPGsSJN8=
-			</data>
 			<key>hash2</key>
 			<data>
 			mFMomMqzUibNkvNL/7/PljtA6VSSCRrjzm8poJPoE44=
@@ -57,10 +45,6 @@
 		</dict>
 		<key>Windows/TWAIN.4DX</key>
 		<dict>
-			<key>hash</key>
-			<data>
-			2CMOSGUkb82oZk2mq02SQ+bqIfE=
-			</data>
 			<key>hash2</key>
 			<data>
 			SzTHmPiAv+VwXwhsfgFBfMduwicAtMJ3zE8JwNg707I=
@@ -68,10 +52,6 @@
 		</dict>
 		<key>Windows64/TWAIN.4DX</key>
 		<dict>
-			<key>hash</key>
-			<data>
-			9K/dkq3tRJCjdD0lxAuQmlSdtIo=
-			</data>
 			<key>hash2</key>
 			<data>
 			tLBsjrQ14o9xLcgSBAiy34xBFAcTq/gR8dkKmTyunUM=

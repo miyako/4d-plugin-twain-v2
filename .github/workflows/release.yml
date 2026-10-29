@@ -58,6 +58,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.version.outputs.tag }}
+          submodules: true
 
       - name: setup MSBuild
         uses: microsoft/setup-msbuild@v2
@@ -71,6 +72,10 @@ jobs:
           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$base/plugins"
           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$base/Plugins/Default"
           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "Objs"
+
+      - name: build jsoncpp from source (x64 /MT static)
+        shell: cmd
+        run: call build-jsoncpp.bat Release
 
       - name: build x64
         shell: cmd
@@ -123,6 +128,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.version.outputs.tag }}
+          submodules: true
 
       - name: download windows binaries
         uses: actions/download-artifact@v4
@@ -162,6 +168,11 @@ jobs:
             --team-id "$TEAM_ID" \
             --password "$APP_PASSWORD" \
             --keychain "$KEYCHAIN_PATH"
+
+      - name: build jsoncpp from source (universal static)
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ env.MACOS_DEPLOYMENT_TARGET }}
+        run: ./build-jsoncpp.sh
 
       - name: build macOS plugin (universal)
         run: |

@@ -125,7 +125,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <Optimization>Disabled</Optimization>
-      <AdditionalIncludeDirectories>support;include;include\json;include\libpng16;include\jpeglib;$(ProjectDir);4D Plugin API\Classes;4D Plugin API;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>support;include;deps\jsoncpp\include\json;deps\jsoncpp\include;include\libpng16;include\jpeglib;$(ProjectDir);4D Plugin API\Classes;4D Plugin API;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>NONDLL;BGDWIN32;WIN32;NOMINMAX;_WINDOWS;NDEBUG;_USRDLL;MY4DPLUGIN_EXPORTS;_CRT_SECURE_NO_WARNINGS;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <MinimalRebuild>true</MinimalRebuild>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
@@ -154,7 +154,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <Optimization>Disabled</Optimization>
-      <AdditionalIncludeDirectories>support;include;include\json;include\libpng16;include\jpeglib;$(ProjectDir);4D Plugin API\Classes;4D Plugin API;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>support;include;deps\jsoncpp\include\json;deps\jsoncpp\include;include\libpng16;include\jpeglib;$(ProjectDir);4D Plugin API\Classes;4D Plugin API;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN64;WIN32;_DEBUG;_WINDOWS;_USRDLL;MY4DPLUGIN_EXPORTS;_CRT_SECURE_NO_WARNINGS;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -173,12 +173,12 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <SubSystem>Windows</SubSystem>
       <AdditionalDependencies>jsoncpp.lib;libjpeg.lib;libpng.lib;libz.lib;twaindsm.lib;Rpcrt4.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>$(ProjectDir)lib\windows64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(ProjectDir)lib\windows64\debug;$(ProjectDir)lib\windows64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
-      <AdditionalIncludeDirectories>support;include;include\json;include\libpng16;include\jpeglib;$(ProjectDir);support;include;include\windows;4D Plugin API\Classes;4D Plugin API;include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>support;include;deps\jsoncpp\include\json;deps\jsoncpp\include;include\libpng16;include\jpeglib;$(ProjectDir);support;include;include\windows;4D Plugin API\Classes;4D Plugin API;include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>NONDLL;BGDWIN32;WIN32;NOMINMAX;_WINDOWS;NDEBUG;_USRDLL;MY4DPLUGIN_EXPORTS;_CRT_SECURE_NO_WARNINGS;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <PrecompiledHeader>
@@ -204,7 +204,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>support;include;include\json;include\libpng16;include\jpeglib;$(ProjectDir);support;include;include\windows;4D Plugin API\Classes;4D Plugin API;include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>support;include;deps\jsoncpp\include\json;deps\jsoncpp\include;include\libpng16;include\jpeglib;$(ProjectDir);support;include;include\windows;4D Plugin API\Classes;4D Plugin API;include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>NONDLL;BGDWIN32;WIN64;WIN32;NOMINMAX;_WINDOWS;NDEBUG;_USRDLL;MY4DPLUGIN_EXPORTS;_CRT_SECURE_NO_WARNINGS;_CRT_SECURE_NO_DEPRECATE;_CRT_NONSTDC_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <PrecompiledHeader>
@@ -227,6 +227,14 @@
     </Link>
   </ItemDefinitionGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <!-- jsoncpp is built from source (deps/jsoncpp submodule) by build-jsoncpp.bat -->
+  <PropertyGroup>
+    <JsonCppLib Condition="'$(Configuration)'=='Debug'">$(ProjectDir)lib\windows64\debug\jsoncpp.lib</JsonCppLib>
+    <JsonCppLib Condition="'$(Configuration)'!='Debug'">$(ProjectDir)lib\windows64\jsoncpp.lib</JsonCppLib>
+  </PropertyGroup>
+  <Target Name="BuildJsonCpp" BeforeTargets="PrepareForBuild" Condition="'$(Platform)'=='x64' And !Exists('$(JsonCppLib)')">
+    <Exec Command="call &quot;$(ProjectDir)build-jsoncpp.bat&quot; $(Configuration)" WorkingDirectory="$(ProjectDir)" />
+  </Target>
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
 </Project>

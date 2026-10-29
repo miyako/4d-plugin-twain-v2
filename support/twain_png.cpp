@@ -20,6 +20,21 @@ void png_write_blob(C_BLOB &data, C_BLOB &picture,
 										int dpi_x,
 										int dpi_y)
 {
+	/* FIX: validate geometry before handing anything to libpng */
+	if ((width <= 0) || (height <= 0) || (bytes_per_line <= 0))
+		return;
+	if ((color != PNG_COLOR_TYPE_GRAY) && (color != PNG_COLOR_TYPE_RGB))
+		return;
+	if ((depth != 1) && (depth != 2) && (depth != 4) && (depth != 8) && (depth != 16))
+		return;
+	if ((color == PNG_COLOR_TYPE_RGB) && (depth < 8))
+		return;
+	size_t channels = (color == PNG_COLOR_TYPE_RGB) ? 3 : 1;
+	if ((size_t)bytes_per_line < (((size_t)width * channels * (size_t)depth) + 7) / 8)
+		return;
+	if ((size_t)data.getBytesLength() < ((size_t)bytes_per_line * (size_t)height))
+		return;
+	
 	C_BLOB png;
 	png_structp png_ptr;
 	png_infop info_ptr;
@@ -28,7 +43,12 @@ void png_write_blob(C_BLOB &data, C_BLOB &picture,
 	if(png_ptr)
 	{
 		info_ptr = png_create_info_struct(png_ptr);
-		if(info_ptr)
+		if(!info_ptr)
+		{
+			/* FIX: png_ptr was leaked when the info struct could not be created */
+			png_destroy_write_struct(&png_ptr, NULL);
+		}
+		else
 		{
 			if(setjmp(png_jmpbuf(png_ptr)))
 			{
@@ -95,6 +115,11 @@ void png_write_blob(C_BLOB &data, C_BLOB &picture,
 				
 				size_t outbuffersize = png.getBytesLength();
 				picture.addBytes((const uint8_t *)&outbuffersize, sizeof(outbuffersize));
+				/* FIX: the PNG bytes themselves were never appended, only the length prefix */
+				if (outbuffersize)
+				{
+					picture.addBytes((const uint8_t *)png.getBytesPtr(), (uint32_t)outbuffersize);
+				}
 			}
 		}
 	}

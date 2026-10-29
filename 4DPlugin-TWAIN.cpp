@@ -10,7 +10,36 @@
 
 #include "4DPlugin-TWAIN.h"
 
+#include <atomic>
+#include <memory>
+#if VERSIONMAC
+#include <unistd.h>
+#endif
+
 #pragma mark -
+
+/*
+ FIX: TWAIN (DSM + data source) is not designed for concurrent sessions, and the
+ Windows path uses fixed, process-wide named objects ("TWAIN_PARAM_IN/OUT").
+ The commands are declared thread-safe, so serialise them: a call made while
+ another TWAIN call is in progress returns an empty result immediately.
+ A non-blocking flag is used on purpose: a mutex could deadlock when two
+ cooperative 4D processes interleave on the same OS thread via PA_YieldAbsolute().
+ */
+static std::atomic<bool> twain_busy(false);
+
+class twain_busy_guard {
+    bool acquired;
+public:
+    twain_busy_guard() : acquired(false) {
+        bool expected = false;
+        acquired = twain_busy.compare_exchange_strong(expected, true);
+    }
+    ~twain_busy_guard() {
+        if(acquired) twain_busy.store(false);
+    }
+    bool ok() const { return acquired; }
+};
 
 void PluginMain(PA_long32 selector, PA_PluginParameters params) {
     
@@ -269,7 +298,8 @@ HANDLE createEventforBufIn2(LPVOID bufIn,
     {
         CopyMemory(&option[0], p, Param2_len);
         p += Param2_len;
-		Param2_option = CUTF8String((const uint8_t *)&scanner[0], Param1_len);
+        /* FIX: was built from the scanner buffer (&scanner[0], Param1_len) */
+		Param2_option = CUTF8String((const uint8_t *)&option[0], Param2_len);
     }
     
     HANDLE scanEvent_c = CreateEvent(NULL, /* the handle cannot be inherited by child processes */
@@ -388,20 +418,20 @@ void getDataFromThread2(std::vector<uint8_t>& data)
 
 void waitForEvent(HANDLE h, HANDLE scanEvent_p, std::vector<uint8_t>& data, std::wstring& ParamB, DWORD len)
 {
+    /*
+     FIX: also wait on the worker thread handle; previously, if the worker
+     ended without signalling scanEvent_p, this loop never ended.
+     */
+    HANDLE handles[2] = {scanEvent_p, h};
     BOOL exit = FALSE;
+    
     do {
-        switch (WaitForSingleObject(scanEvent_p, 100))
+        switch (WaitForMultipleObjects(2, handles, FALSE, 100))
         {
-            case WAIT_ABANDONED:
-            case WAIT_FAILED:
-                exit = TRUE;
-                break;
-            case WAIT_TIMEOUT:
-                PA_YieldAbsolute();
-                break;
             case WAIT_OBJECT_0:
+            {
+                /* response is ready */
                 ResetEvent(scanEvent_p);
-                BOOL success = FALSE;
                 
                 getDataFromThread2(data);
                 
@@ -412,26 +442,32 @@ void waitForEvent(HANDLE h, HANDLE scanEvent_p, std::vector<uint8_t>& data, std:
                     SetEvent(scanEvent_c);
                     CloseHandle(scanEvent_c);
                 }
-                
-                do {
-                    switch (WaitForSingleObject(h, 100))
-                    {
-                        case WAIT_TIMEOUT:
-                            PA_YieldAbsolute();
-                            break;
-                        case WAIT_ABANDONED:
-                        case WAIT_FAILED:
-                        case WAIT_OBJECT_0:
-                            exit = TRUE;
-                            break;
-                    }
-                } while (!exit);
-                
+                exit = TRUE;
+            }
+                break;
+            case WAIT_OBJECT_0 + 1:
+                /* worker ended without a response */
+                exit = TRUE;
+                break;
+            case WAIT_TIMEOUT:
+                PA_YieldAbsolute();
+                break;
+            default:
+                /* WAIT_FAILED, WAIT_ABANDONED_* */
                 exit = TRUE;
                 break;
         }
         
     } while (!exit);
+    
+    /*
+     FIX: always let the worker finish before returning;
+     it reads twain_version_info_t from the caller's stack
+     */
+    while (WAIT_TIMEOUT == WaitForSingleObject(h, 100))
+    {
+        PA_YieldAbsolute();
+    }
 }
 
 #endif
@@ -441,6 +477,11 @@ void waitForEvent(HANDLE h, HANDLE scanEvent_p, std::vector<uint8_t>& data, std:
 void TWAIN_Get_devices(PA_PluginParameters params) {
 
     PA_CollectionRef devices = PA_CreateCollection();
+    
+    /* FIX: serialise TWAIN calls; never leave without PA_ReturnCollection() */
+    twain_busy_guard guard;
+    
+    if(guard.ok()) try {
     
     TW_IDENTITY tw_identity;
     TW_USERINTERFACE tw_userinterface;
@@ -501,6 +542,10 @@ void TWAIN_Get_devices(PA_PluginParameters params) {
         tw_ret = twain_dsm_close(&tw_identity, &tw_parent);
     }
     
+    } catch(...) {
+        /* return whatever was collected */
+    }
+    
     PA_ReturnCollection(params, devices);
 }
 
@@ -515,6 +560,11 @@ void TWAIN_Get_default_option(PA_PluginParameters params) {
     PA_ObjectRef option = PA_CreateObject();
     
 	std::vector<uint8_t> data;
+    
+    /* FIX: serialise TWAIN calls; never leave without PA_ReturnObject() */
+    twain_busy_guard guard;
+    
+    if(guard.ok()) try {
     
     TW_UINT16 majorNum, minorNum, language, country;
     twain_get_version_info(&majorNum, &minorNum, &language, &country);
@@ -583,6 +633,10 @@ void TWAIN_Get_default_option(PA_PluginParameters params) {
     
 #endif
     
+    } catch(...) {
+        data.clear();
+    }
+    
     uint32_t data_len = (uint32_t)data.size();
     size_t p = 0;
 	C_TEXT t;
@@ -597,7 +651,7 @@ void TWAIN_Get_default_option(PA_PluginParameters params) {
         
 		if ((sizeof(uint32_t) + len_1) < data_len)
 		{
-			std::vector<char>buf(len_1);
+			std::vector<char>buf(len_1 + 1);/* FIX: +1 keeps &buf[0] valid when len_1 == 0 */
 			memcpy(&buf[0], &data[p], len_1);
 			p += len_1;
 
@@ -615,7 +669,7 @@ void TWAIN_Get_default_option(PA_PluginParameters params) {
 
 				if ((sizeof(uint32_t) + len_1 + sizeof(uint32_t) + len_2) == data_len)
 				{
-					buf.resize(len_2);
+					buf.resize(len_2 + 1);/* FIX: +1 keeps &buf[0] valid when len_2 == 0 */
 					memcpy(&buf[0], &data[p], len_2);
 					p += len_2;
 
@@ -647,6 +701,15 @@ void TWAIN_SCAN(PA_PluginParameters params) {
     PA_ObjectRef option = PA_GetObjectParameter(params, 2);
 	int format = PA_GetLongParameter(params, 3);
 
+	PA_CollectionRef images = PA_CreateCollection();
+	
+	std::vector<uint8_t> data;
+	
+	/* FIX: serialise TWAIN calls; never leave without PA_ReturnCollection() */
+	twain_busy_guard guard;
+	
+	if(guard.ok()) try {
+	
 	TW_UINT16 majorNum, minorNum, language, country;
 	twain_get_version_info(&majorNum, &minorNum, &language, &country);
 
@@ -656,8 +719,6 @@ void TWAIN_SCAN(PA_PluginParameters params) {
         ob_stringify(option, &Param2_option);
     }
     
-	std::vector<uint8_t> data;
-
 #if VERSIONWIN
 
 	std::wstring ParamA;
@@ -725,30 +786,36 @@ void TWAIN_SCAN(PA_PluginParameters params) {
 
 #endif
 
-	PA_CollectionRef images = PA_CreateCollection();
 	PA_long32 i = 0;
 
+	/*
+	 FIX: the result buffer is a sequence of [size_t length][image bytes];
+	 check both against the remaining size (was unchecked, and &data[0] was
+	 taken on an empty vector whenever the scan failed or was cancelled)
+	 */
 	size_t data_len = data.size();
-	unsigned char *p = (unsigned char *)&data[0];
-	size_t totalsize = 0;
+	size_t pos = 0;
 
-	while (totalsize<data_len)
+	while ((data_len - pos) >= sizeof(size_t))
 	{
 		size_t outbuffersize = 0;
-		memcpy(&outbuffersize, p, sizeof(outbuffersize));
-		p += sizeof(outbuffersize);
+		memcpy(&outbuffersize, &data[pos], sizeof(outbuffersize));
+		pos += sizeof(outbuffersize);
 
-		std::vector<uint8_t>buf(outbuffersize);
-		memcpy(&buf[0], p, outbuffersize);
+		if ((outbuffersize == 0) || (outbuffersize > (data_len - pos)) || (outbuffersize > 0x7FFFFFFF))
+			break;
 
-		PA_Picture picture = PA_CreatePicture((void *)&buf[0], outbuffersize);
-		PA_Variable v = PA_CreateVariable(eVK_Picture);
+		PA_Picture picture = PA_CreatePicture((void *)&data[pos], (PA_long32)outbuffersize);
+		/* FIX: PA_CreateVariable(eVK_Picture) allocated an empty picture that was then overwritten (leak) */
+		PA_Variable v;
 		PA_SetPictureVariable(&v, picture);
 		PA_SetCollectionElement(images, i++, v);
 
-		p += outbuffersize;
-		totalsize += sizeof(outbuffersize);
-		totalsize += outbuffersize;
+		pos += outbuffersize;
+	}
+
+	} catch(...) {
+		/* return whatever was collected */
 	}
 
     PA_ReturnCollection(params, images);
@@ -813,17 +880,25 @@ void getOption(
                     
                     pTW_ARRAY pARRAY = (pTW_ARRAY)DSM::Lock(&tw_entrypoint, tw_capability.hContainer);
                     
-                    for (int i = 0; i < pARRAY->NumItems;++i)
+                    /* FIX: DSM::Lock() returns NULL on macOS (USE_TWAIN_DSM 0) and on failure */
+                    if(pARRAY)
                     {
-                        /* important to downcast */
-                        TW_UINT16 currentValue = ((pTW_UINT16)(&pARRAY->ItemList))[i];
-                        if(currentValue != CAP_SUPPORTEDCAPS)
+                        /* FIX: the list is read as TW_UINT16, so check the item type */
+                        if((pARRAY->ItemType == TWTY_UINT16) || (pARRAY->ItemType == TWTY_INT16))
                         {
-                            capabilities.push_back(currentValue);
+                            for (TW_UINT32 i = 0; i < pARRAY->NumItems;++i)
+                            {
+                                /* important to downcast */
+                                TW_UINT16 currentValue = ((pTW_UINT16)(&pARRAY->ItemList))[i];
+                                if(currentValue != CAP_SUPPORTEDCAPS)
+                                {
+                                    capabilities.push_back(currentValue);
+                                }
+                            }
                         }
+                        DSM::Unlock(&tw_entrypoint, tw_capability.hContainer);
                     }
                     
-                    DSM::Unlock(&tw_entrypoint, tw_capability.hContainer);
                     DSM::Free(&tw_entrypoint, tw_capability.hContainer);
                     
                     for(std::vector<TW_UINT16>::iterator it = capabilities.begin(); it != capabilities.end(); ++it)
@@ -841,6 +916,11 @@ void getOption(
                         PA_YieldAbsolute();
 #endif
                     }
+                }
+                else if(tw_capability.hContainer)
+                {
+                    /* FIX: the application owns the container returned by MSG_GET; it was leaked */
+                    DSM::Free(&tw_entrypoint, tw_capability.hContainer);
                 }
             }
             tw_ret = twain_source_close(&tw_identity, &tw_source_identity);
@@ -903,13 +983,21 @@ unsigned __stdcall getOptionWin(void *p) {
                 
                 /* do stuff and poluate data */
                 
-                getOption(Param1_scanner,
-                          Param2_option, /* not used here */
-                          data, /* return value */
-                          version_info_p->majorNum,
-                          version_info_p->minorNum,
-                          version_info_p->language,
-                          version_info_p->country);
+                /* FIX: an exception escaping a thread function calls std::terminate() (4D crashes) */
+                try
+                {
+                    getOption(Param1_scanner,
+                              Param2_option, /* not used here */
+                              data, /* return value */
+                              version_info_p->majorNum,
+                              version_info_p->minorNum,
+                              version_info_p->language,
+                              version_info_p->country);
+                }
+                catch(...)
+                {
+                    data.clear();
+                }
                 
                 /* stuff done */
                 
@@ -928,7 +1016,8 @@ unsigned __stdcall getOptionWin(void *p) {
                     }
                     
                     /* wait for p to set scanEvent_c */
-                    WaitForSingleObject(scanEvent_c, INFINITE);
+                    /* FIX: bounded wait; p always reads the response before setting scanEvent_c */
+                    WaitForSingleObject(scanEvent_c, 60000);
                     ResetEvent(scanEvent_c);
                     /* now ready to die */
                     
@@ -941,7 +1030,7 @@ unsigned __stdcall getOptionWin(void *p) {
         CloseHandle(fmIn);
     }
     
-    _endthreadex(0);
+    /* FIX: _endthreadex() skips C++ destructors (std::vector data leaked); returning ends the thread properly */
     return 0;
 }
 
@@ -962,12 +1051,13 @@ void doScan(C_TEXT &Param1_scanner,
 	Json::CharReaderBuilder builder;
 	std::string errors;
 
-	Json::CharReader *reader = builder.newCharReader();
+	/* FIX: unique_ptr so the reader is not leaked if parse() throws */
+	std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
 	bool parse = reader->parse((const char *)Param2_option.c_str(),
 		(const char *)Param2_option.c_str() + Param2_option.size(),
 		&root,
 		&errors);
-	delete reader;
+	reader.reset();
 
 	TW_IDENTITY tw_identity;
 	TW_USERINTERFACE tw_userinterface;
@@ -1022,61 +1112,61 @@ void doScan(C_TEXT &Param1_scanner,
 								(TW_MEMREF)&tw_capability))
 							{
 								TW_UINT16 itemType = 0;
-								TW_UINT32 numItems = 0;
-								TW_UINT32 contSize = 0;
 
-								void *_p = DSM::Lock(&tw_entrypoint, tw_capability.hContainer);
-
-								switch (tw_capability.ConType)
+								if (tw_capability.hContainer)
 								{
-								case TWON_ARRAY:
+									void *_p = DSM::Lock(&tw_entrypoint, tw_capability.hContainer);
 
+									/* FIX: DSM::Lock() returns NULL on macOS (USE_TWAIN_DSM 0) and on failure */
+									if (_p)
+									{
+										switch (tw_capability.ConType)
+										{
+										case TWON_ENUMERATION:
+											itemType = ((pTW_ENUMERATION)_p)->ItemType;
+											break;
+										case TWON_ONEVALUE:
+											itemType = ((pTW_ONEVALUE)_p)->ItemType;
+											break;
+										case TWON_RANGE:
+											itemType = ((pTW_RANGE)_p)->ItemType;
+											break;
+										default:
+											/* TWON_ARRAY: not supported */
+											break;
+										}
+										DSM::Unlock(&tw_entrypoint, tw_capability.hContainer);
+									}
+									DSM::Free(&tw_entrypoint, tw_capability.hContainer);
+									tw_capability.hContainer = 0;
+								}
+
+								/*
+								 FIX: always set the current value with a TW_ONEVALUE container.
+								 The previous code re-sent ENUMERATION/RANGE containers whose item
+								 lists were never copied (all zero), indexed the enumeration by byte,
+								 and wrote RANGE values through a cast of the stack TW_CAPABILITY.
+								 */
+								bool supported = false;
+								switch (itemType)
+								{
+								case TWTY_FIX32:
+								case TWTY_INT8:
+								case TWTY_INT16:
+								case TWTY_INT32:
+								case TWTY_UINT8:
+								case TWTY_UINT16:
+								case TWTY_UINT32:
+								case TWTY_BOOL:
+									supported = true;
 									break;
-								case TWON_ENUMERATION:
-									itemType = ((pTW_ENUMERATION)_p)->ItemType;
-									numItems = ((pTW_ENUMERATION)_p)->NumItems;
-									contSize = sizeof(TW_ENUMERATION) + (getSizeForItemType(itemType) * numItems);
-									break;
-								case TWON_ONEVALUE:
-									itemType = ((pTW_ONEVALUE)_p)->ItemType;
-									contSize = sizeof(TW_ONEVALUE);
-									break;
-								case TWON_RANGE:
-									itemType = ((pTW_RANGE)_p)->ItemType;
-									contSize = sizeof(TW_RANGE);
+								default:
+									/* TWTY_FRAME, TWTY_STR*: not implemented */
 									break;
 								}
 
-								DSM::Unlock(&tw_entrypoint, tw_capability.hContainer);
-								DSM::Free(&tw_entrypoint, tw_capability.hContainer);
-
-								if (contSize)
+								if (supported)
 								{
-									tw_capability.hContainer = DSM::Alloc(&tw_entrypoint, contSize);
-
-									void *p = DSM::Lock(&tw_entrypoint, tw_capability.hContainer);
-
-									switch (tw_capability.ConType)
-									{
-									case TWON_ARRAY:
-
-										break;
-									case TWON_ENUMERATION:
-										((pTW_ENUMERATION)p)->ItemType = itemType;
-										((pTW_ENUMERATION)p)->NumItems = numItems;
-										break;
-									case TWON_ONEVALUE:
-										((pTW_ONEVALUE)p)->ItemType = itemType;
-										break;
-									case TWON_RANGE:
-										((pTW_RANGE)p)->ItemType = itemType;
-										break;
-									}
-
-									pTW_ENUMERATION pENUMERATION = (pTW_ENUMERATION)p;
-									pTW_ONEVALUE pONEVALUE = (pTW_ONEVALUE)p;
-									pTW_RANGE pRANGE = (pTW_RANGE)p;
-
 									double f_value = 0.0f;
 									if (value.isDouble()) {
 										f_value = value.asDouble();
@@ -1086,188 +1176,92 @@ void doScan(C_TEXT &Param1_scanner,
 									if (value.isBool()) {
 										b_value = value.asBool();
 									}
+									else if (value.isInt()) {
+										b_value = (value.asInt() != 0);
+									}
 
 									int i_value = json_get_cap_constant(value, cap);
 
-									switch (tw_capability.ConType)
+									tw_capability.ConType = TWON_ONEVALUE;
+									tw_capability.hContainer = DSM::Alloc(&tw_entrypoint, sizeof(TW_ONEVALUE));
+
+									if (tw_capability.hContainer)
 									{
-									case TWON_ARRAY:
+										pTW_ONEVALUE pONEVALUE = (pTW_ONEVALUE)DSM::Lock(&tw_entrypoint, tw_capability.hContainer);
 
-										break;
-
-									case TWON_ENUMERATION:
-										for (int i = 0; i < pENUMERATION->NumItems; ++i)
+										if (pONEVALUE)
 										{
-											if (i_value == (pENUMERATION->ItemList)[i])
+											memset(pONEVALUE, 0, sizeof(TW_ONEVALUE));
+											pONEVALUE->ItemType = itemType;
+
+											switch (itemType)
 											{
-												pENUMERATION->CurrentIndex = i;
+											case TWTY_FIX32:
+											{
+												TW_INT32 value = (TW_INT32)(f_value * 65536.0 + ((f_value < 0) ? (-0.5) : 0.5));
+												TW_FIX32 tw_fix32;
+												tw_fix32.Whole = (TW_UINT16)(value >> 16);
+												tw_fix32.Frac = (TW_UINT16)(value & 0x0000ffffL);
+												memcpy((void *)&pONEVALUE->Item, (const void *)&tw_fix32, sizeof(TW_FIX32));
+											}
+											break;
+											case TWTY_INT8:
+											{
+												TW_INT8 tw_int8 = (TW_INT8)i_value;
+												memcpy((void *)&pONEVALUE->Item, (const void *)&tw_int8, sizeof(TW_INT8));
+											}
+											break;
+											case TWTY_INT16:
+											{
+												TW_INT16 tw_int16 = (TW_INT16)i_value;
+												memcpy((void *)&pONEVALUE->Item, (const void *)&tw_int16, sizeof(TW_INT16));
+											}
+											break;
+											case TWTY_INT32:
+											{
+												TW_INT32 tw_int32 = (TW_INT32)i_value;
+												memcpy((void *)&pONEVALUE->Item, (const void *)&tw_int32, sizeof(TW_INT32));
+											}
+											break;
+											case TWTY_UINT8:
+											{
+												TW_UINT8 tw_uint8 = (TW_UINT8)i_value;
+												memcpy((void *)&pONEVALUE->Item, (const void *)&tw_uint8, sizeof(TW_UINT8));
+											}
+											break;
+											case TWTY_UINT16:
+											{
+												TW_UINT16 tw_uint16 = (TW_UINT16)i_value;
+												memcpy((void *)&pONEVALUE->Item, (const void *)&tw_uint16, sizeof(TW_UINT16));
+											}
+											break;
+											case TWTY_UINT32:
+											{
+												TW_UINT32 tw_uint32 = (TW_UINT32)i_value;
+												memcpy((void *)&pONEVALUE->Item, (const void *)&tw_uint32, sizeof(TW_UINT32));
+											}
+											break;
+											case TWTY_BOOL:
+											{
+												memcpy((void *)&pONEVALUE->Item, (const void *)&b_value, sizeof(TW_BOOL));
+											}
+											break;
+											default:
 												break;
 											}
-										}
-										break;
 
-									case TWON_ONEVALUE:
-										switch (pONEVALUE->ItemType)
-										{
-										case TWTY_FIX32:
-										{
-											TW_INT32 value = (TW_INT32)(f_value * 65536.0 + ((f_value < 0) ? (-0.5) : 0.5));
-											TW_FIX32 tw_fix32;
-											tw_fix32.Whole = (TW_UINT16)(value >> 16);
-											tw_fix32.Frac = (TW_UINT16)(value & 0x0000ffffL);
-											memcpy((void *)&pONEVALUE->Item, (const void *)&tw_fix32, sizeof(TW_FIX32));
-										}
-										break;
-										case TWTY_FRAME:
-										{
-											//not implemented!
-										}
-										break;
-										case TWTY_INT8:
-										{
-											TW_INT8 tw_int8 = (TW_INT8)i_value;
-											memcpy((void *)&pONEVALUE->Item, (const void *)&tw_int8, sizeof(TW_INT8));
-										}
-										break;
-										case TWTY_INT16:
-										{
-											TW_INT16 tw_int16 = (TW_INT16)i_value;
-											memcpy((void *)&pONEVALUE->Item, (const void *)&tw_int16, sizeof(TW_INT16));
-										}
-										break;
-										case TWTY_INT32:
-										{
-											TW_INT32 tw_int32 = (TW_INT32)i_value;
-											memcpy((void *)&pONEVALUE->Item, (const void *)&tw_int32, sizeof(TW_INT32));
-										}
-										break;
-										case TWTY_UINT8:
-										{
-											TW_UINT8 tw_uint8 = (TW_UINT8)i_value;
-											memcpy((void *)&pONEVALUE->Item, (const void *)&tw_uint8, sizeof(TW_UINT8));
-										}
-										break;
-										case TWTY_UINT16:
-										{
-											TW_UINT16 tw_uint16 = (TW_UINT16)i_value;
-											memcpy((void *)&pONEVALUE->Item, (const void *)&tw_uint16, sizeof(TW_UINT16));
-										}
-										break;
-										case TWTY_UINT32:
-										{
-											TW_UINT32 tw_uint32 = (TW_UINT32)i_value;
-											memcpy((void *)&pONEVALUE->Item, (const void *)&tw_uint32, sizeof(TW_UINT32));
-										}
-										break;
-										case TWTY_BOOL:
-										{
-											memcpy((void *)&pONEVALUE->Item, (const void *)&b_value, sizeof(TW_BOOL));
-										}
-										break;
-										case TWTY_STR32:
-										case TWTY_STR64:
-										case TWTY_STR128:
-										case TWTY_STR255:
-										{
+											DSM::Unlock(&tw_entrypoint, tw_capability.hContainer);
 
+											DSM_Entry(
+												&tw_identity,
+												&tw_source_identity,
+												DG_CONTROL,
+												DAT_CAPABILITY,
+												MSG_SET,
+												(TW_MEMREF)&tw_capability);
 										}
-										break;
-										//					case TWTY_STR1024:
-										//					case TWTY_UNI512:
-										//						break;
-										default:
-											break;
-										}
-										break;
-
-									case TWON_RANGE:
-										switch (((pTW_RANGE)&tw_capability)->ItemType)
-										{
-										case TWTY_FIX32:
-										{
-											TW_INT32 value = (TW_INT32)(f_value * 65536.0 + ((f_value < 0) ? (-0.5) : 0.5));
-											TW_FIX32 tw_fix32;
-											tw_fix32.Whole = (TW_UINT16)(value >> 16);
-											tw_fix32.Frac = (TW_UINT16)(value & 0x0000ffffL);
-											memcpy((void *)&((pTW_RANGE)&tw_capability)->CurrentValue, (const void *)&tw_fix32, sizeof(TW_FIX32));
-										}
-										break;
-										case TWTY_FRAME:
-										{
-											//not implemented!
-										}
-										break;
-										case TWTY_INT8:
-										{
-											TW_INT8 tw_int8 = (TW_INT8)i_value;
-											memcpy((void *)&pRANGE->CurrentValue, (const void *)&tw_int8, sizeof(TW_INT8));
-										}
-										break;
-										case TWTY_INT16:
-										{
-											TW_INT16 tw_int16 = (TW_INT16)i_value;
-											memcpy((void *)&pRANGE->CurrentValue, (const void *)&tw_int16, sizeof(TW_INT16));
-										}
-										break;
-										case TWTY_INT32:
-										{
-											TW_INT32 tw_int32 = (TW_INT32)i_value;
-											memcpy((void *)&pRANGE->CurrentValue, (const void *)&tw_int32, sizeof(TW_INT32));
-										}
-										break;
-										case TWTY_UINT8:
-										{
-											TW_UINT8 tw_uint8 = (TW_UINT8)i_value;
-											memcpy((void *)&pRANGE->CurrentValue, (const void *)&tw_uint8, sizeof(TW_UINT8));
-										}
-										break;
-										case TWTY_UINT16:
-										{
-											TW_UINT16 tw_uint16 = (TW_UINT16)i_value;
-											memcpy((void *)&pRANGE->CurrentValue, (const void *)&tw_uint16, sizeof(TW_UINT16));
-										}
-										break;
-										case TWTY_UINT32:
-										{
-											TW_UINT32 tw_uint32 = (TW_UINT32)i_value;
-											memcpy((void *)&pRANGE->CurrentValue, (const void *)&tw_uint32, sizeof(TW_UINT32));
-										}
-										break;
-										case TWTY_BOOL:
-										{
-											memcpy((void *)&pRANGE->CurrentValue, (const void *)&b_value, sizeof(TW_BOOL));
-										}
-										break;
-										case TWTY_STR32:
-										case TWTY_STR64:
-										case TWTY_STR128:
-										case TWTY_STR255:
-										{
-
-										}
-										break;
-										//					case TWTY_STR1024:
-										//					case TWTY_UNI512:
-										//						break;
-										default:
-											break;
-										}
-										break;
-
+										DSM::Free(&tw_entrypoint, tw_capability.hContainer);
 									}
-
-									if (TWRC_SUCCESS == DSM_Entry(
-										&tw_identity,
-										&tw_source_identity,
-										DG_CONTROL,
-										DAT_CAPABILITY,
-										MSG_SET,
-										(TW_MEMREF)&tw_capability))
-									{
-
-									}
-									DSM::Unlock(&tw_entrypoint, tw_capability.hContainer);
-									DSM::Free(&tw_entrypoint, tw_capability.hContainer);
 								}
 
 							}
@@ -1291,9 +1285,15 @@ void doScan(C_TEXT &Param1_scanner,
 				time_t now = time(NULL);
 				time_t end = now + TWAIN_PROCESS_EVENT_TIMEOUT;
 
+				/*
+				 FIX: the loop used to spin at 100% CPU with no yield (4D frozen on macOS
+				 for up to TWAIN_PROCESS_EVENT_TIMEOUT seconds), and it stopped at the first
+				 TWRC_DSEVENT even when the message was not one the application waits for.
+				 */
 				tw_ret = TWRC_NOTDSEVENT;
-				while ((tw_ret == TWRC_NOTDSEVENT) && (time(NULL) < end))
+				while (time(NULL) < end)
 				{
+					tw_event.TWMessage = MSG_NULL;
 					tw_ret = DSM_Entry(
 						&tw_identity,
 						&tw_source_identity,
@@ -1301,6 +1301,22 @@ void doScan(C_TEXT &Param1_scanner,
 						DAT_EVENT,
 						MSG_PROCESSEVENT,
 						(TW_MEMREF)&tw_event);
+
+					if ((tw_ret != TWRC_NOTDSEVENT) && (tw_ret != TWRC_DSEVENT))
+						break;/* TWRC_FAILURE etc. */
+
+					if ((tw_ret == TWRC_DSEVENT)
+						&& ((tw_event.TWMessage == MSG_XFERREADY)
+							|| (tw_event.TWMessage == MSG_CLOSEDSREQ)
+							|| (tw_event.TWMessage == MSG_CLOSEDSOK)))
+						break;
+
+#if VERSIONMAC
+					PA_YieldAbsolute();
+					usleep(10000);
+#else
+					Sleep(10);
+#endif
 				}
 				if (TWRC_DSEVENT == tw_ret)
 				{
@@ -1407,14 +1423,39 @@ void doScan(C_TEXT &Param1_scanner,
 									image_mem_xfer_template.XOffset = TWON_DONTCARE32;
 									image_mem_xfer_template.YOffset = TWON_DONTCARE32;
 									image_mem_xfer_template.BytesWritten = TWON_DONTCARE32;
-									image_mem_xfer_template.Memory.Flags = TWMF_APPOWNS | TWMF_POINTER;
-									image_mem_xfer_template.Memory.Length = tw_setup_mem_xfer.Preferred;
+									/*
+									 FIX: Preferred may be TWON_DONTCARE32 (0xFFFFFFFF, a 4 GB allocation) or 0;
+									 fall back to MaxBufSize / MinBufSize, then to 1 MB
+									 */
+									TW_UINT32 bufSize = tw_setup_mem_xfer.Preferred;
+									if ((bufSize == 0) || (bufSize == TWON_DONTCARE32))
+									{
+										bufSize = tw_setup_mem_xfer.MaxBufSize;
+										if ((bufSize == 0) || (bufSize == TWON_DONTCARE32))
+										{
+											bufSize = tw_setup_mem_xfer.MinBufSize;
+										}
+										if ((bufSize == 0) || (bufSize == TWON_DONTCARE32))
+										{
+											bufSize = 1024 * 1024;
+										}
+									}
 
-									TW_HANDLE hMem = (TW_HANDLE)DSM::Alloc(&tw_entrypoint, tw_setup_mem_xfer.Preferred);
+									image_mem_xfer_template.Memory.Flags = TWMF_APPOWNS | TWMF_POINTER;
+									image_mem_xfer_template.Memory.Length = bufSize;
+
+									TW_HANDLE hMem = (TW_HANDLE)DSM::Alloc(&tw_entrypoint, bufSize);
 
 									if (!hMem) break;//(while)
 
 									image_mem_xfer_template.Memory.TheMem = DSM::Lock(&tw_entrypoint, hMem);
+
+									/* FIX: DSM::Lock() returns NULL on macOS (USE_TWAIN_DSM 0) and on failure */
+									if (!image_mem_xfer_template.Memory.TheMem)
+									{
+										DSM::Free(&tw_entrypoint, hMem);
+										break;//(while)
+									}
 
 									bool scan_started = false;
 									//this is the real buffer
@@ -1423,7 +1464,7 @@ void doScan(C_TEXT &Param1_scanner,
 									for (;;)
 									{
 										memcpy(&tw_image_mem_xfer, &image_mem_xfer_template, sizeof(TW_IMAGEMEMXFER));
-										memset(tw_image_mem_xfer.Memory.TheMem, 0, tw_image_mem_xfer.Memory.Length);
+										/* FIX: no need to clear the whole buffer for every strip; only BytesWritten is read */
 
 										tw_ret = DSM_Entry(
 											&tw_identity,
@@ -1447,7 +1488,10 @@ void doScan(C_TEXT &Param1_scanner,
 											if (tw_image_mem_xfer.Memory.Length)
 											{
 												const uint8_t *p = reinterpret_cast<const uint8_t *>(tw_image_mem_xfer.Memory.TheMem);
-												data.addBytes(p, tw_image_mem_xfer.BytesWritten);
+												/* FIX: never trust BytesWritten beyond the buffer we supplied */
+												TW_UINT32 written = tw_image_mem_xfer.BytesWritten;
+												if (written > bufSize) written = bufSize;
+												data.addBytes(p, written);
 											}
 											if (tw_ret == TWRC_XFERDONE)
 											{
@@ -1459,17 +1503,18 @@ void doScan(C_TEXT &Param1_scanner,
 												pixels_per_line = tw_image_mem_xfer.Columns;
 												bytes_per_line = tw_image_mem_xfer.BytesPerRow;
 
-												int logical_size = tw_image_mem_xfer.BytesPerRow * lines;
-												int actual_size = data.getBytesLength();
+												/* FIX: size_t arithmetic (int overflowed past 2 GB) */
+												size_t logical_size = (lines > 0) ? ((size_t)tw_image_mem_xfer.BytesPerRow * (size_t)lines) : 0;
+												size_t actual_size = data.getBytesLength();
 
 												if (logical_size > actual_size)
 												{
-													int padding = logical_size - actual_size;
-													std::vector<uint8_t>buf(padding);
-													memset(&buf[0], 0xFF, padding);
-													data.addBytes(&buf[0], padding);
+													size_t padding = logical_size - actual_size;
+													std::vector<uint8_t>buf(padding, 0xFF);
+													data.addBytes(&buf[0], (uint32_t)padding);
 												}
-												if ((jpg_color_space == JCS_GRAYSCALE) || (jpg_color_space = JCS_RGB))
+												/* FIX: was (jpg_color_space = JCS_RGB), an assignment that is always true */
+												if ((lines > 0) && ((jpg_color_space == JCS_GRAYSCALE) || (jpg_color_space == JCS_RGB)))
 												{
 													switch (Param3_format)
 													{
@@ -1497,23 +1542,36 @@ void doScan(C_TEXT &Param1_scanner,
 															jpg_color_space,
 															dpi_x,
 															dpi_y);
-														picture.resize(image.getBytesLength());
 													}
 													break;
 
 													}//switch
 
-													memcpy((void *)&picture[0], (const void *)image.getBytesPtr(), picture.size());
+													/*
+													 FIX: append each page ([size_t length][bytes], as written by the encoders);
+													 the previous code overwrote the buffer (only the last page survived)
+													 and never sized it for PNG
+													 */
+													size_t image_len = image.getBytesLength();
+													if (image_len)
+													{
+														const uint8_t *image_ptr = image.getBytesPtr();
+														picture.insert(picture.end(), image_ptr, image_ptr + image_len);
+													}
 												}
 												break;//for()
 
 											}
-											else if ((tw_ret == TWRC_CANCEL) || (tw_ret == TWRC_FAILURE))
-											{
-												break;//for()
-											}
+										}
+										else
+										{
+											/* FIX: TWRC_CANCEL / TWRC_FAILURE / anything else used to loop forever */
+											break;//for()
 										}
 
+#if VERSIONMAC
+										PA_YieldAbsolute();
+#endif
 									}//for
 
 									DSM::Unlock(&tw_entrypoint, hMem);
@@ -1564,7 +1622,7 @@ void doScan(C_TEXT &Param1_scanner,
 							memset(&tw_pendxfers, 0, sizeof(TW_PENDINGXFERS));
 							DSM_Entry(
 								&tw_identity,
-								0,
+								&tw_source_identity,/* FIX: was 0 (sent to the DSM, not the source) */
 								DG_CONTROL,
 								DAT_PENDINGXFERS,
 								MSG_ENDXFER,
@@ -1574,7 +1632,7 @@ void doScan(C_TEXT &Param1_scanner,
 								memset(&tw_pendxfers, 0, sizeof(TW_PENDINGXFERS));
 								DSM_Entry(
 									&tw_identity,
-									0,
+									&tw_source_identity,/* FIX: was 0 (sent to the DSM, not the source) */
 									DG_CONTROL,
 									DAT_PENDINGXFERS,
 									MSG_RESET,
@@ -1629,13 +1687,21 @@ unsigned __stdcall doScanWin(void *p)
 
 				/* do stuff and poluate data */
 
-				doScan(Param1_scanner,
-					Param2_option, data, /* return value */
-					version_info_p->majorNum,
-					version_info_p->minorNum,
-					version_info_p->language,
-					version_info_p->country,
-					Param3_format);
+				/* FIX: an exception escaping a thread function calls std::terminate() (4D crashes) */
+				try
+				{
+					doScan(Param1_scanner,
+						Param2_option, data, /* return value */
+						version_info_p->majorNum,
+						version_info_p->minorNum,
+						version_info_p->language,
+						version_info_p->country,
+						Param3_format);
+				}
+				catch(...)
+				{
+					data.clear();
+				}
 
 				/* stuff done */
 
@@ -1654,7 +1720,8 @@ unsigned __stdcall doScanWin(void *p)
 					}
 
 					/* wait for p to set scanEvent_c */
-					WaitForSingleObject(scanEvent_c, INFINITE);
+					/* FIX: bounded wait; p always reads the response before setting scanEvent_c */
+					WaitForSingleObject(scanEvent_c, 60000);
 					ResetEvent(scanEvent_c);
 					/* now ready to die */
 
@@ -1667,7 +1734,7 @@ unsigned __stdcall doScanWin(void *p)
 		CloseHandle(fmIn);
 	}
 
-	_endthreadex(0);
+	/* FIX: _endthreadex() skips C++ destructors (std::vector data leaked); returning ends the thread properly */
 	return 0;
 }
 

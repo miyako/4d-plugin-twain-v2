@@ -1,5 +1,37 @@
 #include "twain_dsm.h"
 
+/*
+ FIX: read an enumeration item according to its ItemType.
+ ItemList is declared as TW_UINT8[1]; indexing it directly (byte offset) or
+ casting it to TW_UINT32 (4-byte stride) returned the wrong item, and could
+ read past the end of the container for 1- and 2-byte item types.
+ */
+static TW_UINT32 twain_get_enumeration_item(pTW_ENUMERATION pENUMERATION, TW_UINT32 index)
+{
+	if (index >= pENUMERATION->NumItems)
+		return 0;
+	
+	switch (pENUMERATION->ItemType)
+	{
+		case TWTY_INT8:
+			return (TW_UINT32)(TW_INT32)((pTW_INT8)(&pENUMERATION->ItemList))[index];
+		case TWTY_UINT8:
+			return ((pTW_UINT8)(&pENUMERATION->ItemList))[index];
+		case TWTY_INT16:
+			return (TW_UINT32)(TW_INT32)((pTW_INT16)(&pENUMERATION->ItemList))[index];
+		case TWTY_UINT16:
+			return ((pTW_UINT16)(&pENUMERATION->ItemList))[index];
+		case TWTY_BOOL:
+			return ((pTW_BOOL)(&pENUMERATION->ItemList))[index];
+		case TWTY_INT32:
+		case TWTY_UINT32:
+			return ((pTW_UINT32)(&pENUMERATION->ItemList))[index];
+		default:
+			break;
+	}
+	return 0;
+}
+
 void twain_get_option_value_name(TW_UINT16 cap, TW_INT32 item, Json::Value& value) {
 
 	char str[CAP_VALUE_BUF_SIZE];
@@ -1533,7 +1565,7 @@ void twain_get_capability_value(TW_CAPABILITY *tw_capability, void *p, Json::Val
             
             break;
         case TWON_ENUMERATION:
-            item = (pENUMERATION->ItemList[pENUMERATION->CurrentIndex]);
+            item = (TW_INT32)twain_get_enumeration_item(pENUMERATION, pENUMERATION->CurrentIndex);/* FIX: was a byte offset */
             break;
         case TWON_ONEVALUE:
             item = pONEVALUE->Item;
@@ -2553,7 +2585,7 @@ void twain_get_capability_value(TW_CAPABILITY *tw_capability, void *p, Json::Val
                 case TWTY_INT32:
                 {
                     string_or_constant_value = FALSE;
-                    TW_UINT32 currentValue = ((pTW_UINT32)(&pENUMERATION->ItemList))[pENUMERATION->CurrentIndex];
+                    TW_UINT32 currentValue = twain_get_enumeration_item(pENUMERATION, pENUMERATION->CurrentIndex);/* FIX: was a 4-byte stride for every type */
 					json_scanner_option = (Json::UInt)currentValue;
                 }
                     break;
@@ -2562,14 +2594,14 @@ void twain_get_capability_value(TW_CAPABILITY *tw_capability, void *p, Json::Val
                 case TWTY_UINT32:
                 {
                     string_or_constant_value = FALSE;
-                    TW_UINT32 currentValue = ((pTW_UINT32)(&pENUMERATION->ItemList))[pENUMERATION->CurrentIndex];
+                    TW_UINT32 currentValue = twain_get_enumeration_item(pENUMERATION, pENUMERATION->CurrentIndex);/* FIX: was a 4-byte stride for every type */
 					json_scanner_option = (Json::UInt)currentValue;
                 }
                     break;
                 case TWTY_BOOL:
                 {
                     string_or_constant_value = FALSE;
-                    TW_UINT32 currentValue = ((pTW_UINT32)(&pENUMERATION->ItemList))[pENUMERATION->CurrentIndex];
+                    TW_UINT32 currentValue = twain_get_enumeration_item(pENUMERATION, pENUMERATION->CurrentIndex);/* FIX: was a 4-byte stride for every type */
 					json_scanner_option = (BOOL)currentValue;
                 }
                     break;
@@ -2787,7 +2819,7 @@ void twain_get_capability_param(TW_CAPABILITY *tw_capability, void *p, Json::Val
 			break;
 			case TWTY_BOOL:
 			{
-				TW_UINT32 currentValue = ((pTW_UINT32)(&pARRAY->ItemList))[i];
+				TW_UINT32 currentValue = ((pTW_BOOL)(&pARRAY->ItemList))[i];/* FIX: TW_BOOL is 2 bytes */
 				if ((BOOL)currentValue) {
 					json_scanner_option_values.append(true);
 				}
@@ -2911,7 +2943,7 @@ void twain_get_capability_param(TW_CAPABILITY *tw_capability, void *p, Json::Val
 			break;
 			case TWTY_BOOL:
 			{
-				TW_UINT32 currentValue = ((pTW_UINT32)(&pENUMERATION->ItemList))[i];
+				TW_UINT32 currentValue = ((pTW_BOOL)(&pENUMERATION->ItemList))[i];/* FIX: TW_BOOL is 2 bytes */
 				if ((BOOL)currentValue) {
 					json_scanner_option_values.append(true);
 				}
@@ -2925,7 +2957,6 @@ void twain_get_capability_param(TW_CAPABILITY *tw_capability, void *p, Json::Val
 			case TWTY_STR32:
 			{
 				pTW_STR32 pStr32 = &((pTW_STR32)(&pENUMERATION->ItemList))[i];
-				pStr32 += (i * 33);
 				sprintf(str, "%s", pStr32);
 				json_scanner_option_values.append(str);
 			}
@@ -2933,7 +2964,6 @@ void twain_get_capability_param(TW_CAPABILITY *tw_capability, void *p, Json::Val
 			case TWTY_STR64:
 			{
 				pTW_STR64 pStr64 = &((pTW_STR64)(&pENUMERATION->ItemList))[i];
-				pStr64 += (i * 65);
 				sprintf(str, "%s", pStr64);
 				json_scanner_option_values.append(str);
 			}
@@ -2941,7 +2971,6 @@ void twain_get_capability_param(TW_CAPABILITY *tw_capability, void *p, Json::Val
 			case TWTY_STR128:
 			{
 				pTW_STR128 pStr128 = &((pTW_STR128)(&pENUMERATION->ItemList))[i];
-				pStr128 += (i * 129);
 				sprintf(str, "%s", pStr128);
 				json_scanner_option_values.append(str);
 			}
@@ -2949,7 +2978,6 @@ void twain_get_capability_param(TW_CAPABILITY *tw_capability, void *p, Json::Val
 			case TWTY_STR255:
 			{
 				pTW_STR255 pStr255 = &((pTW_STR255)(&pENUMERATION->ItemList))[i];
-				pStr255 += (i * 256);
 				sprintf(str, "%s", pStr255);
 				json_scanner_option_values.append(str);
 			}
@@ -3007,8 +3035,12 @@ void twain_get_option_value(TW_IDENTITY *tw_identity,
     {
 		TW_MEMREF mem = DSM::Lock(tw_entrypoint, tw_capability->hContainer);
 
-		twain_get_capability_value(tw_capability, mem, json_scanner_options[optionName]);
-		twain_get_capability_param(tw_capability, mem, json_scanner_option_values[optionName]);
+		/* FIX: DSM::Lock() returns NULL on macOS (USE_TWAIN_DSM 0) and on failure */
+		if (mem)
+		{
+			twain_get_capability_value(tw_capability, mem, json_scanner_options[optionName]);
+			twain_get_capability_param(tw_capability, mem, json_scanner_option_values[optionName]);
+		}
 
         DSM::Unlock(tw_entrypoint, tw_capability->hContainer);
         DSM::Free(tw_entrypoint, tw_capability->hContainer);

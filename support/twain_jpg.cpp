@@ -2,7 +2,13 @@
 
 void JPG::my_error_exit(j_common_ptr cinfo)
 {
-	
+	/* FIX: libjpeg requires error_exit() never to return to the library;
+	 jump back to the setjmp() in jpg_write_blob() instead */
+	my_error_ptr err = (my_error_ptr)cinfo->err;
+	if (err->jump_set)
+	{
+		longjmp(err->setjmp_buffer, 1);
+	}
 }
 
 void JPG::my_output_message (j_common_ptr cinfo)
@@ -76,83 +82,111 @@ void jpg_write_blob(C_BLOB &data, C_BLOB &picture,
 										int dpi_y,
 										int quality)
 {
+	/* FIX: validate geometry before handing anything to libjpeg */
+	if ((width <= 0) || (height <= 0) || (bytes_per_line <= 0))
+		return;
+	if ((width > JPEG_MAX_DIMENSION) || (height > JPEG_MAX_DIMENSION))
+		return;
+	if ((color != JCS_RGB) && (color != JCS_GRAYSCALE))
+		return;
+	if ((size_t)data.getBytesLength() < ((size_t)bytes_per_line * (size_t)height))
+		return;
+	
+	int components = (color == JCS_RGB) ? 3 : 1;
+	
+	/* FIX: the row buffer must hold what libjpeg reads per scanline (width * components),
+	 otherwise libjpeg reads past the end of the heap buffer */
+	size_t rowbuf_size = (depth == 1) ? ((size_t)bytes_per_line * 8) : (size_t)bytes_per_line;
+	size_t row_need = (depth == 1) ? (size_t)width : ((size_t)width * (size_t)components);
+	if (rowbuf_size < row_need)
+		return;
+	
+	/* allocate everything before setjmp() so the error path can release it */
+	size_t outbuffersize = data.getBytesLength() + 32768;
+	unsigned char *outbuffer = (unsigned char *)malloc(outbuffersize);
+	JSAMPLE *rowbuf = (JSAMPLE *)malloc(rowbuf_size);
+	
+	if ((!outbuffer) || (!rowbuf))
+	{
+		free(outbuffer);
+		free(rowbuf);
+		return;
+	}
+	
 	struct jpeg_compress_struct cinfo;
 	struct JPG::my_error_mgr jcerr;
+	memset(&cinfo, 0, sizeof(cinfo));
 	
-	/* initialize compression object */
 	cinfo.err = jpeg_std_error(&jcerr.pub);
-	jpeg_create_compress(&cinfo);
 	jcerr.pub.error_exit = JPG::my_error_exit;
 	jcerr.pub.output_message = JPG::my_output_message;
-	jcerr.jump_set = 0;
+	jcerr.jump_set = 1;
 	
 	if (setjmp(jcerr.setjmp_buffer))
 	{
 		/* error handler for compress failures */
-		jpeg_abort_compress(&cinfo);
-		jcerr.jump_set=0;
-	} else {
-		jcerr.jump_set=1;
+		jcerr.jump_set = 0;
+		/* the destination manager may have realloc'ed the output buffer */
+		if (cinfo.dest)
+		{
+			JPG::jpeg_memory_destination_ptr dest = (JPG::jpeg_memory_destination_ptr)cinfo.dest;
+			outbuffer = dest->buf;
+		}
+		jpeg_destroy_compress(&cinfo);
+		free(outbuffer);
+		free(rowbuf);
+		return;
 	}
 	
-	size_t outbuffersize = data.getBytesLength() + 32768;
-	unsigned char *outbuffer = (unsigned char *)malloc(outbuffersize);
+	jpeg_create_compress(&cinfo);
+	JPG::jpeg_memory_dest(&cinfo, &outbuffer, &outbuffersize, 65536);
 	
-	if(outbuffer)
+	cinfo.in_color_space = color;
+	cinfo.input_components = components;
+	cinfo.image_width = width;
+	cinfo.image_height = height;
+	jpeg_set_defaults(&cinfo);
+	//jpeg_set_defaults overrides density
+	cinfo.density_unit = 1;   /* Inches */
+	cinfo.X_density = dpi_x;
+	cinfo.Y_density = dpi_y;
+	cinfo.write_JFIF_header = _true;
+	jpeg_set_quality(&cinfo, quality, _true);
+	jpeg_simple_progression(&cinfo);
+	cinfo.optimize_coding = _true;
+	jpeg_start_compress(&cinfo, _true);
+	
+	const unsigned char *p = (const unsigned char *)data.getBytesPtr();
+	
+	for(int y = 0; y < height; y++)
 	{
-		JPG::jpeg_memory_dest(&cinfo, &outbuffer, &outbuffersize, 65536);
-		
-		cinfo.in_color_space = color;
-		cinfo.input_components = (color == JCS_RGB) ? 3 : 1;
-		cinfo.image_width = width;
-		cinfo.image_height = height;
-		jpeg_set_defaults(&cinfo);
-		//jpeg_set_defaults overrides density
-		cinfo.density_unit = 1;   /* Inches */
-		cinfo.X_density = dpi_x;
-		cinfo.Y_density = dpi_y;
-		cinfo.write_JFIF_header = _true;
-		jpeg_set_quality(&cinfo, quality, _true);
-		jpeg_simple_progression(&cinfo);
-		cinfo.optimize_coding = _true;
-		jpeg_start_compress(&cinfo, _true);
-		
-		unsigned char *p = (unsigned char *)data.getBytesPtr();
-		
-		JSAMPLE *jpegbuf = (JSAMPLE *)malloc(bytes_per_line);
-		
-		if(jpegbuf)
+		if(depth == 1)
 		{
-			for(int y = 0; y < height; y++)
+			/* FIX: one buffer for all rows instead of malloc/free per scanline */
+			for(int col1 = 0; col1 < bytes_per_line; col1++)
 			{
-				if(depth == 1)
+				for(int col8 = 0; col8 < 8; col8++)
 				{
-					JSAMPLE *buf8 = (JSAMPLE *)malloc(bytes_per_line * 8);
-					for(int col1 = 0; col1 < bytes_per_line; col1++)
-					{
-						for(int col8 = 0; col8 < 8; col8++)
-						{
-							buf8[col1 * 8 + col8] = p[col1] & (1 << (8 - col8 - 1)) ? 0 : 0xff;
-						}
-					}
-					jpeg_write_scanlines(&cinfo, &buf8, 1);
-					free(buf8);
-				}else
-				{
-					memcpy(jpegbuf, p, bytes_per_line);
-					jpeg_write_scanlines(&cinfo, &jpegbuf, 1);
+					rowbuf[col1 * 8 + col8] = p[col1] & (1 << (8 - col8 - 1)) ? 0 : 0xff;
 				}
-				p += bytes_per_line;
-			}//height
-			free(jpegbuf);
+			}
+		}else
+		{
+			memcpy(rowbuf, p, bytes_per_line);
 		}
-		
-		jpeg_finish_compress(&cinfo);
-		jpeg_destroy_compress(&cinfo);
-		
-		picture.addBytes((const uint8_t *)&outbuffersize, sizeof(outbuffersize));
-		picture.addBytes((const uint8_t *)outbuffer, (unsigned int)outbuffersize);
-		
-		free(outbuffer);
-	}//outbuffer
+		JSAMPROW row = rowbuf;
+		jpeg_write_scanlines(&cinfo, &row, 1);
+		p += bytes_per_line;
+	}//height
+	
+	jpeg_finish_compress(&cinfo);
+	jcerr.jump_set = 0;
+	jpeg_destroy_compress(&cinfo);
+	
+	free(rowbuf);
+	
+	picture.addBytes((const uint8_t *)&outbuffersize, sizeof(outbuffersize));
+	picture.addBytes((const uint8_t *)outbuffer, (unsigned int)outbuffersize);
+	
+	free(outbuffer);
 }

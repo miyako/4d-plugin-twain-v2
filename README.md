@@ -475,3 +475,22 @@ $options:=New object(\
 $images:=TWAIN Scan($scanner;$options;Scanner image type JPEG)  // or Scanner image type PNG
 // $images[0], $images[1], … : Picture, one per page; empty collection on failure
 ```
+
+---
+
+## Building from source
+
+[jsoncpp](https://github.com/open-source-parsers/jsoncpp) is built from source (git submodule `deps/jsoncpp`, pinned to `1.9.8`) so its headers and static libraries always match. Clone with submodules:
+
+```sh
+git clone --recurse-submodules https://github.com/miyako/4d-plugin-twain-v2.git
+# or, in an existing clone
+git submodule update --init
+```
+
+Both projects build jsoncpp automatically on first build if the library is missing (requires CMake):
+
+- **macOS**: `./build-jsoncpp.sh` → `a/libjsoncpp.a` (universal arm64 + x86_64, static).
+- **Windows**: `build-jsoncpp.bat [Release|Debug]` → `lib\windows64\jsoncpp.lib` (x64, `/MT`) or `lib\windows64\debug\jsoncpp.lib` (`/MTd`).
+
+After updating the submodule, re-run the script (or delete the built library) to rebuild.

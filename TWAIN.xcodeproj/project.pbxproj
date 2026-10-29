@@ -243,6 +243,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 42D60B3F0A9DDBC8002ABB42 /* Build configuration list for PBXNativeTarget "TWAIN" */;
 			buildPhases = (
+				D1A0C0DE2A00000000000001 /* Build jsoncpp */,
 				8D01CCC70486CAD60068D4B7 /* Headers */,
 				8D01CCC90486CAD60068D4B7 /* Resources */,
 				D134D4AB1A030B7A008D14EF /* CopyFiles */,
@@ -317,6 +318,21 @@
 /* End PBXRezBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		D1A0C0DE2A00000000000001 /* Build jsoncpp */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Build jsoncpp";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ ! -f \"$PROJECT_DIR/a/libjsoncpp.a\" ]; then\n    \"$PROJECT_DIR/build-jsoncpp.sh\"\nfi\n";
+			showEnvVarsInLog = 0;
+		};
 		D1292E7B22C4A91E00CB5A8C /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
@@ -393,6 +409,8 @@
 				HEADER_SEARCH_PATHS = (
 					support,
 					"include/**",
+					deps/jsoncpp/include/json,
+					deps/jsoncpp/include,
 				);
 				INFOPLIST_FILE = Info.plist;
 				INSTALL_PATH = "$(HOME)/Library/Bundles";
@@ -448,6 +466,8 @@
 				HEADER_SEARCH_PATHS = (
 					support,
 					"include/**",
+					deps/jsoncpp/include/json,
+					deps/jsoncpp/include,
 				);
 				INFOPLIST_FILE = Info.plist;
 				INSTALL_PATH = "$(HOME)/Library/Bundles";
@@ -501,6 +521,8 @@
 				HEADER_SEARCH_PATHS = (
 					support,
 					"include/**",
+					deps/jsoncpp/include/json,
+					deps/jsoncpp/include,
 				);
 				INFOPLIST_FILE = Info.plist;
 				INSTALL_PATH = "$(HOME)/Library/Bundles";

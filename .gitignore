@@ -1,1 +1,6 @@
 build/*
+
+# built from deps/jsoncpp by build-jsoncpp.sh / build-jsoncpp.bat
+a/libjsoncpp.a
+lib/windows64/jsoncpp.lib
+lib/windows64/debug/

@@ -537,6 +537,8 @@ void TWAIN_Get_devices(PA_PluginParameters params) {
             PA_SetObjectVariable(&d, device);
             
             PA_SetCollectionElement(devices, index++, d);
+            /* FIX: PA_SetCollectionElement copies the value; release ours (device leaked) */
+            PA_ClearVariable(&d);
         }
         
         tw_ret = twain_dsm_close(&tw_identity, &tw_parent);
@@ -659,7 +661,19 @@ void TWAIN_Get_default_option(PA_PluginParameters params) {
 			u = PA_CreateUnistring((PA_Unichar *)t.getUTF16StringPtr());
 			PA_SetStringVariable(&args[0], &u);
 			PA_SetLongintVariable(&args[1], eVK_Object);
-			ob_set_o(option, L"option", PA_GetObjectVariable(PA_ExecuteCommandByID(1218/*JSON Parse*/, args, 2)));
+			PA_Variable r = PA_ExecuteCommandByID(1218/*JSON Parse*/, args, 2);
+			/* FIX: the result is owned, but only when the call succeeded */
+			if(PA_GetLastError() == eER_NoErr)
+			{
+				if(PA_GetVariableKind(r) == eVK_Object)
+				{
+					ob_set_o(option, L"option", PA_GetObjectVariable(r));/* ob_set_o consumes the object */
+				}
+				else
+				{
+					PA_ClearVariable(&r);
+				}
+			}
 			PA_DisposeUnistring(&u);
 
 			if ((sizeof(uint32_t) + len_1 + sizeof(uint32_t)) < data_len)
@@ -677,7 +691,19 @@ void TWAIN_Get_default_option(PA_PluginParameters params) {
 					u = PA_CreateUnistring((PA_Unichar *)t.getUTF16StringPtr());
 					PA_SetStringVariable(&args[0], &u);
 					PA_SetLongintVariable(&args[1], eVK_Object);
-					ob_set_o(option, L"values", PA_GetObjectVariable(PA_ExecuteCommandByID(1218/*JSON Parse*/, args, 2)));
+					PA_Variable r = PA_ExecuteCommandByID(1218/*JSON Parse*/, args, 2);
+					/* FIX: the result is owned, but only when the call succeeded */
+					if(PA_GetLastError() == eER_NoErr)
+					{
+						if(PA_GetVariableKind(r) == eVK_Object)
+						{
+							ob_set_o(option, L"values", PA_GetObjectVariable(r));/* ob_set_o consumes the object */
+						}
+						else
+						{
+							PA_ClearVariable(&r);
+						}
+					}
 					PA_DisposeUnistring(&u);
 				}
 
@@ -810,6 +836,8 @@ void TWAIN_SCAN(PA_PluginParameters params) {
 		PA_Variable v;
 		PA_SetPictureVariable(&v, picture);
 		PA_SetCollectionElement(images, i++, v);
+		/* FIX: PA_SetCollectionElement copies the picture; release ours (one picture leaked per page) */
+		PA_ClearVariable(&v);
 
 		pos += outbuffersize;
 	}

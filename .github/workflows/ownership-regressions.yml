@@ -1,0 +1,28 @@
+name: Ownership regressions
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  ownership:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run ASan/UBSan ownership harness (fixed tree)
+        run: tests/ownership/run.sh . fixed
+      - name: Run the same harness on the unfixed baseline (defect tests must fail)
+        run: |
+          base=$(mktemp -d)
+          git archive 2423ec4eea8c2459db1327a9dfe4fa7c7d479731 | tar -x -C "$base"
+          JSONCPP="$PWD/deps/jsoncpp" tests/ownership/run.sh "$base" baseline
